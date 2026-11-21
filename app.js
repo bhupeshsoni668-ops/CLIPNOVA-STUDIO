@@ -648,16 +648,175 @@ async function renderClip(clip, index, total) {
       "Preparing MP4 download..."
     );
 
+
+async function renderClip(clip, index, total) {
+  const inputName = "clipnova_input.mp4";
+  const outputName = `clipnova_output_${index + 1}.mp4`;
+
+  const duration = clip.end - clip.start;
+
+  let inputWritten = false;
+
+  try {
+    if (!selectedFile) {
+      throw new Error("No source video selected.");
+    }
+
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error("Invalid highlight duration.");
+    }
+
+    updateGeneration(
+      10 + (index / total) * 85,
+      `Preparing highlight ${index + 1}/${total}...`
+    );
+
     await waitForPaint();
 
-    const outputData = ffmpeg.FS(
-      "readFile",
-      outputName
+    // STEP 1: Read source video
+
+    updateGeneration(
+      11 + (index / total) * 85,
+      "Reading video file..."
     );
+
+    await waitForPaint();
+
+    let buffer = await selectedFile.arrayBuffer();
+
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error("Source video is empty.");
+    }
+
+    let videoData = new Uint8Array(buffer);
+
+    // STEP 2: Copy source into FFmpeg memory
+
+    updateGeneration(
+      12 + (index / total) * 85,
+      "Copying video into FFmpeg memory..."
+    );
+
+    await waitForPaint();
+
+    ffmpeg.FS("writeFile", inputName, videoData);
+    inputWritten = true;
+
+    // Release temporary JS references
+
+    videoData = null;
+    buffer = null;
+
+    await waitForPaint();
+
+    // STEP 3: Render highlight
+
+    const startProgress =
+      13 + (index / total) * 85;
+
+    const clipProgress = 85 / total;
+
+    updateGeneration(
+      startProgress,
+      `Rendering highlight ${index + 1}/${total}...`
+    );
+
+    await waitForPaint();
+
+    ffmpeg.setProgress(({ ratio }) => {
+      const safeRatio = Number.isFinite(ratio)
+        ? Math.max(0, Math.min(1, ratio))
+        : 0;
+
+      updateGeneration(
+        startProgress + safeRatio * clipProgress,
+        `Rendering highlight ${index + 1}/${total}...`
+      );
+    });
+
+    // STEP 4: Execute FFmpeg
+
+    let normalExit = false;
+
+    try {
+      await ffmpeg.run(
+        "-nostdin",
+        "-y",
+
+        "-ss", clip.start.toFixed(3),
+        "-i", inputName,
+        "-t", duration.toFixed(3),
+
+        "-map", "0:v:0",
+        "-map", "0:a?",
+
+        "-vf",
+        "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,setsar=1",
+
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-pix_fmt", "yuv420p",
+
+        "-c:a", "aac",
+        "-b:a", "96k",
+
+        "-threads", "1",
+        "-movflags", "+faststart",
+
+        outputName
+      );
+
+    } catch (error) {
+      const message = error?.message || String(error);
+
+      // Some single-thread FFmpeg builds throw
+      // ExitStatus even after a normal exit(0).
+
+      if (
+        error?.status === 0 ||
+        /exit\(0\)/i.test(message)
+      ) {
+        normalExit = true;
+        console.warn(
+          "FFmpeg returned exit(0). Verifying output file."
+        );
+      } else {
+        throw error;
+      }
+    }
+
+    // STEP 5: Verify actual output
+
+    updateGeneration(
+      startProgress + clipProgress * 0.95,
+      "Verifying rendered MP4..."
+    );
+
+    await waitForPaint();
+
+    let outputData;
+
+    try {
+      outputData = ffmpeg.FS(
+        "readFile",
+        outputName
+      );
+    } catch (error) {
+      if (normalExit) {
+        throw new Error(
+          "FFmpeg exited with code 0, but the output MP4 could not be read. Try a smaller source video."
+        );
+      }
+
+      throw error;
+    }
 
     if (!outputData || outputData.length === 0) {
       throw new Error("Rendered video is empty.");
     }
+
+    // STEP 6: Create downloadable MP4
 
     const blob = new Blob(
       [outputData],
@@ -678,9 +837,16 @@ async function renderClip(clip, index, total) {
       blob.size
     );
 
+    updateGeneration(
+      startProgress + clipProgress,
+      `Highlight ${index + 1} completed.`
+    );
+
     return true;
 
   } finally {
+    // STEP 7: Clean temporary FFmpeg files
+
     try {
       if (inputWritten) {
         ffmpeg.FS("unlink", inputName);
@@ -692,6 +858,7 @@ async function renderClip(clip, index, total) {
     } catch (_) {}
   }
 }
+    
 
 // =============================================
 // GENERATE SELECTED CLIPS
