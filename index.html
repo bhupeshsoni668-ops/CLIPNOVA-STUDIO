@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -10,7 +11,12 @@
 <body>
   <div class="shell">
     <header class="topbar">
-      <a class="brand" href="#"><span class="brand-mark">C</span><span>CLIPNOVA <b>AI</b><small>GAMING SHORTS STUDIO</small></span></a>
+      <a class="brand" href="#">
+        <span class="brand-mark">C</span>
+        <span>CLIPNOVA <b>AI</b>
+          <small>GAMING SHORTS STUDIO</small>
+        </span>
+      </a>
       <span class="status"><i></i> FREE-TIER BUILD</span>
     </header>
 
@@ -22,57 +28,117 @@
       </section>
 
       <section class="panel">
-        <div class="section-head"><div><span class="step">01</span><h2>Connect processing engine</h2></div><span id="apiStatus" class="pill muted">Not connected</span></div>
+        <div class="section-head">
+          <div><span class="step">01</span><h2>Connect processing engine</h2></div>
+          <span id="apiStatus" class="pill muted">Not connected</span>
+        </div>
         <label for="apiUrl">Backend URL</label>
         <div class="api-row">
           <input id="apiUrl" type="url" placeholder="https://your-space.hf.space" autocomplete="url">
-          <button id="saveApi" class="btn secondary">Save</button>
+          <button id="saveApi" class="btn secondary" type="button">Save</button>
         </div>
         <p class="hint">Paste your deployed backend URL once. It is saved only in this browser.</p>
       </section>
 
       <section class="panel">
-        <div class="section-head"><div><span class="step">02</span><h2>Upload gameplay</h2></div><span class="pill">MP4 · MOV · WebM</span></div>
-        <label class="dropzone" id="dropzone" for="videoFile">
-          <input id="videoFile" type="file" accept="video/mp4,video/quicktime,video/webm,video/*">
+        <div class="section-head">
+          <div><span class="step">02</span><h2>Upload gameplay</h2></div>
+          <span class="pill">MP4 · MOV · WebM</span>
+        </div>
+
+        <div class="dropzone" id="dropzone">
+          <input
+            id="videoFile"
+            type="file"
+            accept="video/*,.mp4,.mov,.webm"
+            hidden
+          >
+
           <span class="upload-icon">↑</span>
           <strong>Choose a gameplay video</strong>
-          <span>Tap to browse files on your phone</span>
-          <small>Initial backend limit: 500 MB · Up to 2 hours</small>
-        </label>
+          <span>Tap the button below to browse files on your phone</span>
+          <button
+            id="chooseVideoBtn"
+            class="btn primary"
+            type="button"
+          >
+            CHOOSE VIDEO
+          </button>
+          <small>Initial file limit: 500 MB</small>
+        </div>
+
         <div id="fileInfo" class="file-info hidden"></div>
         <video id="sourcePreview" class="preview hidden" controls playsinline></video>
+
         <div class="action-row">
-          <button id="analyzeBtn" class="btn primary" disabled>ANALYZE VIDEO <span>→</span></button>
+          <button id="analyzeBtn" class="btn primary" disabled type="button">
+            ANALYZE VIDEO <span>→</span>
+          </button>
         </div>
+
         <div id="analysisProgress" class="progress-wrap hidden">
-          <div class="progress-label"><span id="analysisMessage">Preparing analysis…</span><span id="analysisPercent">0%</span></div>
+          <div class="progress-label">
+            <span id="analysisMessage">Preparing analysis…</span>
+            <span id="analysisPercent">0%</span>
+          </div>
           <div class="progress"><i id="analysisBar"></i></div>
         </div>
+
         <div id="errorBox" class="error hidden" role="alert"></div>
       </section>
 
       <section id="resultsSection" class="panel hidden">
-        <div class="section-head"><div><span class="step">03</span><h2>Detected highlights</h2></div><span id="resultCount" class="pill"></span></div>
-        <p class="hint">Candidates are ranked using real visual-change and audio-energy signals. They are not guaranteed kills or wins.</p>
-        <div id="highlights" class="highlights"></div>
-        <div class="generate-row">
-          <div><b>Gaming Shorts preset 01</b><small>9:16 · MP4 · 1080 × 1920 target</small></div>
-          <button id="generateAllBtn" class="btn primary">GENERATE SELECTED</button>
+        <div class="section-head">
+          <div><span class="step">03</span><h2>Detected highlights</h2></div>
+          <span id="resultCount" class="pill"></span>
         </div>
+
+        <p class="hint">Candidates are ranked using visual-change signals. They are not guaranteed kills or wins.</p>
+
+        <div id="highlights" class="highlights"></div>
+
+        <div class="generate-row">
+          <div>
+            <b>Gaming Shorts preset 01</b>
+            <small>9:16 · MP4 · 1080 × 1920 target</small>
+          </div>
+          <button id="generateAllBtn" class="btn primary" type="button">
+            GENERATE SELECTED
+          </button>
+        </div>
+
         <div id="generationProgress" class="progress-wrap hidden">
-          <div class="progress-label"><span id="generationMessage">Rendering clips…</span><span id="generationPercent">0%</span></div>
+          <div class="progress-label">
+            <span id="generationMessage">Rendering clips…</span>
+            <span id="generationPercent">0%</span>
+          </div>
           <div class="progress"><i id="generationBar"></i></div>
         </div>
+
         <div id="downloads" class="downloads"></div>
       </section>
 
       <section class="note">
         <b>Processing transparency</b>
-        <p>This build performs actual signal-based highlight ranking and FFmpeg rendering. Whisper speech captions are attempted when the backend model is available. It does not yet identify game events semantically or perform AI super-resolution.</p>
+        <p>This build uses browser-based visual-change analysis and FFmpeg rendering. It does not yet identify game events semantically or perform AI super-resolution.</p>
       </section>
     </main>
+
     <footer>CLIPNOVA AI <span>·</span> Built for gameplay-only editing</footer>
   </div>
+
   <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
-<script src="app.js"></script>
+  <script src="app.js"></script>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const fileInput = document.getElementById("videoFile");
+      const chooseButton = document.getElementById("chooseVideoBtn");
+
+      chooseButton.addEventListener("click", function () {
+        fileInput.click();
+      });
+    });
+  </script>
+</body>
+</html>
