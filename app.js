@@ -18,6 +18,10 @@ let generatedURLs = [];
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024;
 
+// ---------------------------------
+// ERROR HANDLING
+// ---------------------------------
+
 function showError(message) {
   errorBox.textContent = message;
   errorBox.classList.remove("hidden");
@@ -31,6 +35,7 @@ function clearError() {
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
+
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
@@ -48,6 +53,10 @@ function updateGeneration(percent, message) {
   $("generationBar").style.width = `${percent}%`;
 }
 
+// ---------------------------------
+// VIDEO UPLOAD
+// ---------------------------------
+
 function loadVideo(file) {
   clearError();
 
@@ -63,9 +72,12 @@ function loadVideo(file) {
 
   selectedFile = file;
 
-  if (videoURL) URL.revokeObjectURL(videoURL);
+  if (videoURL) {
+    URL.revokeObjectURL(videoURL);
+  }
 
   videoURL = URL.createObjectURL(file);
+
   sourcePreview.src = videoURL;
   sourcePreview.classList.remove("hidden");
 
@@ -82,15 +94,22 @@ function loadVideo(file) {
   $("apiStatus").className = "pill";
 }
 
-videoFile.addEventListener("change", (event) => {
-  loadVideo(event.target.files[0]);
-});
+if (videoFile) {
+  videoFile.addEventListener("change", (event) => {
+    const file = event.target.files[0];
+    if (file) loadVideo(file);
+  });
+}
 
 $("saveApi").addEventListener("click", () => {
   $("apiStatus").textContent = "Not required";
   $("apiStatus").className = "pill muted";
   $("apiUrl").value = "";
 });
+
+// ---------------------------------
+// VIDEO METADATA
+// ---------------------------------
 
 function getVideoMetadata(url) {
   return new Promise((resolve, reject) => {
@@ -129,6 +148,10 @@ function seekVideo(video, time) {
   });
 }
 
+// ---------------------------------
+// VISUAL FRAME ANALYSIS
+// ---------------------------------
+
 async function analyzeFrames(url, duration) {
   const video = document.createElement("video");
 
@@ -138,6 +161,7 @@ async function analyzeFrames(url, duration) {
 
   await new Promise((resolve, reject) => {
     video.onloadedmetadata = resolve;
+
     video.onerror = () => reject(
       new Error("Unable to load gameplay video.")
     );
@@ -150,6 +174,10 @@ async function analyzeFrames(url, duration) {
   const ctx = canvas.getContext("2d", {
     willReadFrequently: true
   });
+
+  if (!ctx) {
+    throw new Error("Canvas is not supported in this browser.");
+  }
 
   const sampleInterval = Math.max(1, duration / 180);
   const scores = [];
@@ -208,6 +236,10 @@ async function analyzeFrames(url, duration) {
   return scores;
 }
 
+// ---------------------------------
+// HIGHLIGHT DETECTION
+// ---------------------------------
+
 function findHighlights(scores, duration) {
   const clipDuration = Math.min(20, duration);
   const candidates = [];
@@ -256,6 +288,10 @@ function findHighlights(scores, duration) {
   return selected.sort((a, b) => a.start - b.start);
 }
 
+// ---------------------------------
+// DISPLAY HIGHLIGHTS
+// ---------------------------------
+
 function displayHighlights(clips) {
   highlights.innerHTML = "";
 
@@ -293,7 +329,6 @@ function displayHighlights(clips) {
 // FFMPEG INITIALIZATION
 // ---------------------------------
 
-
 async function initializeFFmpeg() {
   if (ffmpeg && ffmpeg.isLoaded()) {
     return;
@@ -320,16 +355,11 @@ async function initializeFFmpeg() {
   try {
     updateGeneration(2, "Initializing single-thread FFmpeg...");
 
-    const { createFFmpeg } = library;
-
-    ffmpeg = createFFmpeg({
+    ffmpeg = library.createFFmpeg({
       log: false,
-
       mainName: "main",
-
       corePath:
         "https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js",
-
       progress: ({ ratio }) => {
         if (Number.isFinite(ratio)) {
           window.currentFFmpegProgress = Math.max(
@@ -355,42 +385,8 @@ async function initializeFFmpeg() {
   }
 }
 
-
-  ffmpegLoading = true;
-
-  try {
-    updateGeneration(2, "Initializing FFmpeg...");
-
-    const { createFFmpeg } = library;
-
-    ffmpeg = createFFmpeg({
-      log: false,
-      corePath:
-        "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
-
-      progress: ({ ratio }) => {
-        if (Number.isFinite(ratio)) {
-          window.currentFFmpegProgress = Math.max(
-            0,
-            Math.min(1, ratio)
-          );
-        }
-      }
-    });
-
-    updateGeneration(5, "Downloading FFmpeg engine...");
-
-    await ffmpeg.load();
-
-    updateGeneration(10, "FFmpeg engine ready.");
-
-  } finally {
-    ffmpegLoading = false;
-  }
-}
-
 // ---------------------------------
-// CLEANUP OLD DOWNLOADS
+// CLEANUP DOWNLOADS
 // ---------------------------------
 
 function clearDownloads() {
@@ -424,11 +420,6 @@ async function renderClip(clip, index, total) {
 
     window.currentFFmpegProgress = 0;
 
-    updateGeneration(
-      10 + (index / total) * 85,
-      `Rendering vertical MP4 ${index + 1}/${total}...`
-    );
-
     const startProgress = 10 + (index / total) * 85;
     const clipProgress = 85 / total;
 
@@ -447,24 +438,18 @@ async function renderClip(clip, index, total) {
       "-ss", clip.start.toFixed(3),
       "-i", inputName,
       "-t", duration.toFixed(3),
-
       "-map", "0:v:0",
       "-map", "0:a?",
-
       "-vf",
       "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1",
-
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-crf", "26",
       "-pix_fmt", "yuv420p",
-
       "-c:a", "aac",
       "-b:a", "128k",
-
       "-threads", "1",
       "-movflags", "+faststart",
-
       outputName
     );
 
@@ -526,7 +511,6 @@ function createDownloadCard(url, index, size) {
   link.textContent = "DOWNLOAD MP4";
 
   card.append(title, info, link);
-
   $("downloads").appendChild(card);
 }
 
@@ -615,8 +599,10 @@ analyzeBtn.addEventListener("click", async () => {
 
     const metadata = await getVideoMetadata(videoURL);
 
-    if (!Number.isFinite(metadata.duration) ||
-        metadata.duration < 10) {
+    if (
+      !Number.isFinite(metadata.duration) ||
+      metadata.duration < 10
+    ) {
       throw new Error(
         "Video must be at least 10 seconds long."
       );
@@ -668,4 +654,4 @@ window.addEventListener("beforeunload", () => {
     URL.revokeObjectURL(url);
   });
 });
-               
+        
