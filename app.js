@@ -293,6 +293,7 @@ function displayHighlights(clips) {
 // FFMPEG INITIALIZATION
 // ---------------------------------
 
+
 async function initializeFFmpeg() {
   if (ffmpeg && ffmpeg.isLoaded()) {
     return;
@@ -304,13 +305,56 @@ async function initializeFFmpeg() {
 
   const library = window.FFmpeg;
 
-  if (!library ||
-      !library.createFFmpeg ||
-      !library.fetchFile) {
+  if (
+    !library ||
+    !library.createFFmpeg ||
+    !library.fetchFile
+  ) {
     throw new Error(
       "FFmpeg library not found. Check the script tag in index.html."
     );
   }
+
+  ffmpegLoading = true;
+
+  try {
+    updateGeneration(2, "Initializing single-thread FFmpeg...");
+
+    const { createFFmpeg } = library;
+
+    ffmpeg = createFFmpeg({
+      log: false,
+
+      mainName: "main",
+
+      corePath:
+        "https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js",
+
+      progress: ({ ratio }) => {
+        if (Number.isFinite(ratio)) {
+          window.currentFFmpegProgress = Math.max(
+            0,
+            Math.min(1, ratio)
+          );
+        }
+      }
+    });
+
+    updateGeneration(5, "Downloading single-thread FFmpeg engine...");
+
+    await ffmpeg.load();
+
+    updateGeneration(10, "FFmpeg engine ready.");
+
+  } catch (error) {
+    ffmpeg = null;
+    throw error;
+
+  } finally {
+    ffmpegLoading = false;
+  }
+}
+
 
   ffmpegLoading = true;
 
