@@ -12,6 +12,11 @@ const highlights = $("highlights");
 let selectedFile = null;
 let videoURL = null;
 let detectedClips = [];
+let ffmpeg = null;
+let ffmpegLoading = false;
+let generatedURLs = [];
+
+const MAX_FILE_SIZE = 500 * 1024 * 1024;
 
 function showError(message) {
   errorBox.textContent = message;
@@ -36,6 +41,13 @@ function updateProgress(percent, message) {
   $("analysisBar").style.width = `${percent}%`;
 }
 
+function updateGeneration(percent, message) {
+  $("generationProgress").classList.remove("hidden");
+  $("generationPercent").textContent = `${Math.round(percent)}%`;
+  $("generationMessage").textContent = message;
+  $("generationBar").style.width = `${percent}%`;
+}
+
 function loadVideo(file) {
   clearError();
 
@@ -44,8 +56,8 @@ function loadVideo(file) {
     return;
   }
 
-  if (file.size > 500 * 1024 * 1024) {
-    showError("Video exceeds the initial 500 MB limit.");
+  if (file.size > MAX_FILE_SIZE) {
+    showError("Video exceeds the 500 MB limit.");
     return;
   }
 
@@ -105,6 +117,7 @@ function getVideoMetadata(url) {
 function seekVideo(video, time) {
   return new Promise((resolve, reject) => {
     video.onseeked = () => resolve();
+
     video.onerror = () => reject(
       new Error("Video frame could not be read.")
     );
@@ -276,6 +289,272 @@ function displayHighlights(clips) {
   resultsSection.classList.remove("hidden");
 }
 
+// ---------------------------------
+// FFMPEG INITIALIZATION
+// ---------------------------------
+
+async function initializeFFmpeg() {
+  if (ffmpeg && ffmpeg.isLoaded()) {
+    return;
+  }
+
+  if (ffmpegLoading) {
+    throw new Error("FFmpeg is already loading. Please wait.");
+  }
+
+  const library = window.FFmpeg;
+
+  if (!library ||
+      !library.createFFmpeg ||
+      !library.fetchFile) {
+    throw new Error(
+      "FFmpeg library not found. Check the script tag in index.html."
+    );
+  }
+
+  ffmpegLoading = true;
+
+  try {
+    updateGeneration(2, "Initializing FFmpeg...");
+
+    const { createFFmpeg } = library;
+
+    ffmpeg = createFFmpeg({
+      log: false,
+      corePath:
+        "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
+
+      progress: ({ ratio }) => {
+        if (Number.isFinite(ratio)) {
+          window.currentFFmpegProgress = Math.max(
+            0,
+            Math.min(1, ratio)
+          );
+        }
+      }
+    });
+
+    updateGeneration(5, "Downloading FFmpeg engine...");
+
+    await ffmpeg.load();
+
+    updateGeneration(10, "FFmpeg engine ready.");
+
+  } finally {
+    ffmpegLoading = false;
+  }
+}
+
+// ---------------------------------
+// CLEANUP OLD DOWNLOADS
+// ---------------------------------
+
+function clearDownloads() {
+  generatedURLs.forEach(url => URL.revokeObjectURL(url));
+  generatedURLs = [];
+
+  $("downloads").innerHTML = "";
+}
+
+// ---------------------------------
+// RENDER ONE VERTICAL MP4
+// ---------------------------------
+
+async function renderClip(clip, index, total) {
+  const { fetchFile } = window.FFmpeg;
+
+  const inputName = "clipnova_input";
+  const outputName = `clipnova_output_${index + 1}.mp4`;
+
+  const duration = clip.end - clip.start;
+
+  try {
+    updateGeneration(
+      10 + (index / total) * 85,
+      `Preparing highlight ${index + 1}/${total}...`
+    );
+
+    const videoData = await fetchFile(selectedFile);
+
+    ffmpeg.FS("writeFile", inputName, videoData);
+
+    window.currentFFmpegProgress = 0;
+
+    updateGeneration(
+      10 + (index / total) * 85,
+      `Rendering vertical MP4 ${index + 1}/${total}...`
+    );
+
+    const startProgress = 10 + (index / total) * 85;
+    const clipProgress = 85 / total;
+
+    ffmpeg.setProgress(({ ratio }) => {
+      const safeRatio = Number.isFinite(ratio)
+        ? Math.max(0, Math.min(1, ratio))
+        : 0;
+
+      updateGeneration(
+        startProgress + safeRatio * clipProgress,
+        `Rendering highlight ${index + 1}/${total}...`
+      );
+    });
+
+    await ffmpeg.run(
+      "-ss", clip.start.toFixed(3),
+      "-i", inputName,
+      "-t", duration.toFixed(3),
+
+      "-map", "0:v:0",
+      "-map", "0:a?",
+
+      "-vf",
+      "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1",
+
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "26",
+      "-pix_fmt", "yuv420p",
+
+      "-c:a", "aac",
+      "-b:a", "128k",
+
+      "-threads", "1",
+      "-movflags", "+faststart",
+
+      outputName
+    );
+
+    const outputData = ffmpeg.FS(
+      "readFile",
+      outputName
+    );
+
+    const blob = new Blob(
+      [outputData],
+      { type: "video/mp4" }
+    );
+
+    if (!blob.size) {
+      throw new Error("Rendered video is empty.");
+    }
+
+    const downloadURL = URL.createObjectURL(blob);
+    generatedURLs.push(downloadURL);
+
+    createDownloadCard(
+      downloadURL,
+      index + 1,
+      blob.size
+    );
+
+    return true;
+
+  } finally {
+    try {
+      ffmpeg.FS("unlink", inputName);
+    } catch (_) {}
+
+    try {
+      ffmpeg.FS("unlink", outputName);
+    } catch (_) {}
+  }
+}
+
+// ---------------------------------
+// DOWNLOAD CARD
+// ---------------------------------
+
+function createDownloadCard(url, index, size) {
+  const card = document.createElement("div");
+  card.className = "highlight-card";
+
+  const title = document.createElement("strong");
+  title.textContent = `Gaming Short ${index}`;
+
+  const info = document.createElement("p");
+  info.textContent =
+    `MP4 · 1080 × 1920 · ${(size / (1024 * 1024)).toFixed(1)} MB`;
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `CLIPNOVA_Short_${index}.mp4`;
+  link.className = "btn primary";
+  link.textContent = "DOWNLOAD MP4";
+
+  card.append(title, info, link);
+
+  $("downloads").appendChild(card);
+}
+
+// ---------------------------------
+// GENERATE SELECTED CLIPS
+// ---------------------------------
+
+$("generateAllBtn").addEventListener("click", async () => {
+  clearError();
+
+  if (!selectedFile || !detectedClips.length) {
+    showError("Analyze a gameplay video first.");
+    return;
+  }
+
+  const checked = Array.from(
+    highlights.querySelectorAll(
+      'input[type="checkbox"]:checked'
+    )
+  );
+
+  if (!checked.length) {
+    showError("Select at least one highlight.");
+    return;
+  }
+
+  const selectedClips = checked.map(
+    checkbox => detectedClips[
+      Number(checkbox.dataset.index)
+    ]
+  );
+
+  const button = $("generateAllBtn");
+  button.disabled = true;
+
+  clearDownloads();
+
+  try {
+    updateGeneration(0, "Starting rendering engine...");
+
+    await initializeFFmpeg();
+
+    for (let i = 0; i < selectedClips.length; i++) {
+      await renderClip(
+        selectedClips[i],
+        i,
+        selectedClips.length
+      );
+    }
+
+    updateGeneration(100, "All MP4 clips rendered successfully.");
+
+  } catch (error) {
+    console.error("CLIPNOVA rendering error:", error);
+
+    showError(
+      "Rendering failed: " +
+      (error.message || "Unknown error") +
+      ". Try a smaller video or another browser."
+    );
+
+    updateGeneration(0, "Rendering failed.");
+
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ---------------------------------
+// ANALYZE VIDEO
+// ---------------------------------
+
 analyzeBtn.addEventListener("click", async () => {
   clearError();
 
@@ -294,7 +573,9 @@ analyzeBtn.addEventListener("click", async () => {
 
     if (!Number.isFinite(metadata.duration) ||
         metadata.duration < 10) {
-      throw new Error("Video must be at least 10 seconds long.");
+      throw new Error(
+        "Video must be at least 10 seconds long."
+      );
     }
 
     const scores = await analyzeFrames(
@@ -310,7 +591,9 @@ analyzeBtn.addEventListener("click", async () => {
     );
 
     if (!detectedClips.length) {
-      throw new Error("No suitable highlight candidates found.");
+      throw new Error(
+        "No suitable highlight candidates found."
+      );
     }
 
     displayHighlights(detectedClips);
@@ -322,26 +605,23 @@ analyzeBtn.addEventListener("click", async () => {
 
   } catch (error) {
     showError(error.message || "Video analysis failed.");
+
   } finally {
     analyzeBtn.disabled = false;
   }
 });
 
-$("generateAllBtn").addEventListener("click", () => {
-  const checked = highlights.querySelectorAll(
-    'input[type="checkbox"]:checked'
-  );
-
-  if (!checked.length) {
-    showError("Select at least one highlight.");
-    return;
-  }
-
-  showError(
-    "Highlight analysis is ready. Video rendering engine is the next implementation step."
-  );
-});
+// ---------------------------------
+// PAGE CLEANUP
+// ---------------------------------
 
 window.addEventListener("beforeunload", () => {
-  if (videoURL) URL.revokeObjectURL(videoURL);
+  if (videoURL) {
+    URL.revokeObjectURL(videoURL);
+  }
+
+  generatedURLs.forEach(url => {
+    URL.revokeObjectURL(url);
+  });
 });
+               
