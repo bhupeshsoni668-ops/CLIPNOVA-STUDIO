@@ -1,4 +1,11 @@
 
+"use strict";
+
+// =============================================
+// CLIPNOVA AI - GAMING SHORTS GENERATOR
+// FFmpeg.wasm 0.11.6 - Single Thread
+// =============================================
+
 const $ = (id) => document.getElementById(id);
 
 const videoFile = $("videoFile");
@@ -8,19 +15,22 @@ const fileInfo = $("fileInfo");
 const errorBox = $("errorBox");
 const resultsSection = $("resultsSection");
 const highlights = $("highlights");
+const generateBtn = $("generateAllBtn");
 
 let selectedFile = null;
 let videoURL = null;
 let detectedClips = [];
 let ffmpeg = null;
 let ffmpegLoading = false;
+let generating = false;
 let generatedURLs = [];
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024;
+const MAX_ANALYSIS_FRAMES = 90;
 
-// ---------------------------------
-// ERROR HANDLING
-// ---------------------------------
+// =============================================
+// HELPERS
+// =============================================
 
 function showError(message) {
   errorBox.textContent = message;
@@ -41,26 +51,46 @@ function formatTime(seconds) {
 
 function updateProgress(percent, message) {
   $("analysisProgress").classList.remove("hidden");
-  $("analysisPercent").textContent = `${percent}%`;
+  $("analysisPercent").textContent = `${Math.round(percent)}%`;
   $("analysisMessage").textContent = message;
   $("analysisBar").style.width = `${percent}%`;
 }
 
 function updateGeneration(percent, message) {
   $("generationProgress").classList.remove("hidden");
-  $("generationPercent").textContent = `${Math.round(percent)}%`;
+
+  const safePercent = Math.max(0, Math.min(100, percent));
+
+  $("generationPercent").textContent =
+    `${Math.round(safePercent)}%`;
+
   $("generationMessage").textContent = message;
-  $("generationBar").style.width = `${percent}%`;
+  $("generationBar").style.width = `${safePercent}%`;
 }
 
-// ---------------------------------
+function waitForPaint() {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+function formatSize(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+// =============================================
 // VIDEO UPLOAD
-// ---------------------------------
+// =============================================
 
 function loadVideo(file) {
   clearError();
 
-  if (!file || !file.type.startsWith("video/")) {
+  if (!file) return;
+
+  if (
+    !file.type.startsWith("video/") &&
+    !/\.(mp4|mov|webm|m4v|mkv)$/i.test(file.name)
+  ) {
     showError("Please select a valid video file.");
     return;
   }
@@ -79,24 +109,27 @@ function loadVideo(file) {
   videoURL = URL.createObjectURL(file);
 
   sourcePreview.src = videoURL;
+  sourcePreview.load();
   sourcePreview.classList.remove("hidden");
 
   fileInfo.textContent =
-    `${file.name} · ${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+    `${file.name} · ${formatSize(file.size)}`;
 
   fileInfo.classList.remove("hidden");
+
   analyzeBtn.disabled = false;
 
-  resultsSection.classList.add("hidden");
   detectedClips = [];
+  resultsSection.classList.add("hidden");
 
   $("apiStatus").textContent = "Browser mode";
   $("apiStatus").className = "pill";
 }
 
 if (videoFile) {
-  videoFile.addEventListener("change", (event) => {
+  videoFile.addEventListener("change", event => {
     const file = event.target.files[0];
+
     if (file) loadVideo(file);
   });
 }
@@ -107,9 +140,9 @@ $("saveApi").addEventListener("click", () => {
   $("apiUrl").value = "";
 });
 
-// ---------------------------------
+// =============================================
 // VIDEO METADATA
-// ---------------------------------
+// =============================================
 
 function getVideoMetadata(url) {
   return new Promise((resolve, reject) => {
@@ -127,139 +160,180 @@ function getVideoMetadata(url) {
       });
     };
 
-    video.onerror = () => reject(
-      new Error("Could not read video metadata.")
-    );
+    video.onerror = () => {
+      reject(new Error("Could not read video metadata."));
+    };
+
+    video.load();
   });
 }
+
+// =============================================
+// SAFE VIDEO SEEK
+// =============================================
 
 function seekVideo(video, time) {
   return new Promise((resolve, reject) => {
-    video.onseeked = () => resolve();
-
-    video.onerror = () => reject(
-      new Error("Video frame could not be read.")
-    );
-
-    video.currentTime = Math.min(
+    const target = Math.min(
       time,
       Math.max(0, video.duration - 0.05)
     );
+
+    if (Math.abs(video.currentTime - target) < 0.01) {
+      resolve();
+      return;
+    }
+
+    let finished = false;
+
+    const timeout = setTimeout(() => {
+      if (finished) return;
+
+      finished = true;
+      cleanup();
+
+      reject(new Error(
+        "Video seeking timed out. Try another MP4 video."
+      ));
+    }, 15000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    }
+
+    function onSeeked() {
+      if (finished) return;
+
+      finished = true;
+      cleanup();
+      resolve();
+    }
+
+    function onError() {
+      if (finished) return;
+
+      finished = true;
+      cleanup();
+
+      reject(new Error("Video frame could not be read."));
+    }
+
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("error", onError);
+
+    video.currentTime = target;
   });
 }
 
-// ---------------------------------
+// =============================================
 // VISUAL FRAME ANALYSIS
-// ---------------------------------
+// =============================================
 
+async function analyzeFrames(url, duration) {
+  const video = document.createElement("video");
 
-async function renderClip(clip, index, total) {
-  const inputName = "clipnova_input";
-  const outputName = `clipnova_output_${index + 1}.mp4`;
+  video.preload = "auto";
+  video.muted = true;
+  video.playsInline = true;
+  video.src = url;
 
-  const duration = clip.end - clip.start;
+  await new Promise((resolve, reject) => {
+    video.onloadedmetadata = resolve;
+
+    video.onerror = () => {
+      reject(new Error("Unable to load gameplay video."));
+    };
+
+    video.load();
+  });
+
+  const canvas = document.createElement("canvas");
+
+  canvas.width = 96;
+  canvas.height = 54;
+
+  const ctx = canvas.getContext("2d", {
+    willReadFrequently: true
+  });
+
+  if (!ctx) {
+    throw new Error("Canvas is not supported.");
+  }
+
+  const sampleCount = Math.min(
+    MAX_ANALYSIS_FRAMES,
+    Math.max(2, Math.floor(duration))
+  );
+
+  const sampleInterval = duration / sampleCount;
+
+  const scores = [];
+  let previousFrame = null;
 
   try {
-    updateGeneration(
-      10 + (index / total) * 85,
-      `Loading video ${index + 1}/${total}...`
-    );
-
-    // Read selected video using browser native API
-    updateGeneration(
-      11 + (index / total) * 85,
-      "Reading video file..."
-    );
-
-    const buffer = await selectedFile.arrayBuffer();
-    const videoData = new Uint8Array(buffer);
-
-    if (!videoData.length) {
-      throw new Error("Video file is empty.");
-    }
-
-    // Copy video into FFmpeg memory
-    updateGeneration(
-      12 + (index / total) * 85,
-      "Copying video into FFmpeg memory..."
-    );
-
-    ffmpeg.FS("writeFile", inputName, videoData);
-
-    const startProgress = 13 + (index / total) * 85;
-    const clipProgress = 85 / total;
-
-    updateGeneration(
-      startProgress,
-      `Rendering highlight ${index + 1}/${total}...`
-    );
-
-    ffmpeg.setProgress(({ ratio }) => {
-      const safeRatio = Number.isFinite(ratio)
-        ? Math.max(0, Math.min(1, ratio))
-        : 0;
-
-      updateGeneration(
-        startProgress + safeRatio * clipProgress,
-        `Rendering highlight ${index + 1}/${total}...`
+    for (let i = 0; i < sampleCount; i++) {
+      const currentTime = Math.min(
+        i * sampleInterval,
+        duration - 0.05
       );
-    });
 
-    await ffmpeg.run(
-      "-ss", clip.start.toFixed(3),
-      "-i", inputName,
-      "-t", duration.toFixed(3),
-      "-map", "0:v:0",
-      "-map", "0:a?",
-      "-vf",
-      "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1",
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "26",
-      "-pix_fmt", "yuv420p",
-      "-c:a", "aac",
-      "-b:a", "128k",
-      "-threads", "1",
-      "-movflags", "+faststart",
-      outputName
-    );
+      await seekVideo(video, currentTime);
 
-    const outputData = ffmpeg.FS("readFile", outputName);
+      ctx.drawImage(video, 0, 0, 96, 54);
 
-    const blob = new Blob(
-      [outputData],
-      { type: "video/mp4" }
-    );
+      const pixels = ctx.getImageData(
+        0, 0, 96, 54
+      ).data;
 
-    if (!blob.size) {
-      throw new Error("Rendered video is empty.");
+      let difference = 0;
+
+      if (previousFrame) {
+        for (let p = 0; p < pixels.length; p += 4) {
+          const current =
+            (pixels[p] + pixels[p + 1] + pixels[p + 2]) / 3;
+
+          const previous =
+            (previousFrame[p] +
+             previousFrame[p + 1] +
+             previousFrame[p + 2]) / 3;
+
+          difference += Math.abs(current - previous);
+        }
+
+        difference /= (96 * 54);
+      }
+
+      scores.push({
+        time: currentTime,
+        score: difference
+      });
+
+      previousFrame = new Uint8ClampedArray(pixels);
+
+      const percent = Math.round(
+        ((i + 1) / sampleCount) * 95
+      );
+
+      updateProgress(
+        percent,
+        `Analyzing gameplay: ${formatTime(currentTime)}`
+      );
+
+      await waitForPaint();
     }
-
-    const downloadURL = URL.createObjectURL(blob);
-    generatedURLs.push(downloadURL);
-
-    createDownloadCard(
-      downloadURL,
-      index + 1,
-      blob.size
-    );
-
-    return true;
-
   } finally {
-    try {
-      ffmpeg.FS("unlink", inputName);
-    } catch (_) {}
-
-    try {
-      ffmpeg.FS("unlink", outputName);
-    } catch (_) {}
+    video.removeAttribute("src");
+    video.load();
   }
+
+  return scores;
 }
 
-// ---------------------------------
+// =============================================
 // HIGHLIGHT DETECTION
-// ---------------------------------
+// =============================================
 
 function findHighlights(scores, duration) {
   const clipDuration = Math.min(20, duration);
@@ -272,17 +346,17 @@ function findHighlights(scores, duration) {
     start + clipDuration <= duration;
     start += step
   ) {
-    const windowScores = scores.filter(
-      item =>
-        item.time >= start &&
-        item.time < start + clipDuration
+    const windowScores = scores.filter(item =>
+      item.time >= start &&
+      item.time < start + clipDuration
     );
 
     if (!windowScores.length) continue;
 
     const average =
-      windowScores.reduce((sum, item) => sum + item.score, 0) /
-      windowScores.length;
+      windowScores.reduce(
+        (sum, item) => sum + item.score, 0
+      ) / windowScores.length;
 
     candidates.push({
       start,
@@ -301,7 +375,9 @@ function findHighlights(scores, duration) {
       candidate.end > item.start
     );
 
-    if (!overlaps) selected.push(candidate);
+    if (!overlaps) {
+      selected.push(candidate);
+    }
 
     if (selected.length >= 5) break;
   }
@@ -309,34 +385,43 @@ function findHighlights(scores, duration) {
   return selected.sort((a, b) => a.start - b.start);
 }
 
-// ---------------------------------
+// =============================================
 // DISPLAY HIGHLIGHTS
-// ---------------------------------
+// =============================================
 
 function displayHighlights(clips) {
   highlights.innerHTML = "";
 
   clips.forEach((clip, index) => {
     const card = document.createElement("div");
-    card.className = "highlight-card";
+    card.className = "highlight";
 
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = true;
-    checkbox.dataset.index = index;
+    const content = document.createElement("div");
 
-    const title = document.createElement("strong");
+    const title = document.createElement("h3");
     title.textContent = `Highlight ${index + 1}`;
 
     const timing = document.createElement("p");
     timing.textContent =
       `${formatTime(clip.start)} – ${formatTime(clip.end)}`;
 
-    const score = document.createElement("small");
+    const score = document.createElement("div");
+    score.className = "meta";
     score.textContent =
       `Visual activity score: ${clip.score.toFixed(2)}`;
 
-    card.append(checkbox, title, timing, score);
+    content.append(title, timing, score);
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = true;
+    checkbox.dataset.index = index;
+    checkbox.setAttribute(
+      "aria-label",
+      `Select highlight ${index + 1}`
+    );
+
+    card.append(content, checkbox);
     highlights.appendChild(card);
   });
 
@@ -346,9 +431,9 @@ function displayHighlights(clips) {
   resultsSection.classList.remove("hidden");
 }
 
-// ---------------------------------
+// =============================================
 // FFMPEG INITIALIZATION
-// ---------------------------------
+// =============================================
 
 async function initializeFFmpeg() {
   if (ffmpeg && ffmpeg.isLoaded()) {
@@ -356,7 +441,7 @@ async function initializeFFmpeg() {
   }
 
   if (ffmpegLoading) {
-    throw new Error("FFmpeg is already loading. Please wait.");
+    throw new Error("FFmpeg is already loading.");
   }
 
   const library = window.FFmpeg;
@@ -367,35 +452,37 @@ async function initializeFFmpeg() {
     !library.fetchFile
   ) {
     throw new Error(
-      "FFmpeg library not found. Check the script tag in index.html."
+      "FFmpeg library missing. Check index.html script URL."
     );
   }
 
   ffmpegLoading = true;
 
   try {
-    updateGeneration(2, "Initializing single-thread FFmpeg...");
+    updateGeneration(2, "Initializing FFmpeg engine...");
+    await waitForPaint();
 
     ffmpeg = library.createFFmpeg({
       log: false,
       mainName: "main",
+
       corePath:
         "https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js",
+
       progress: ({ ratio }) => {
-        if (Number.isFinite(ratio)) {
-          window.currentFFmpegProgress = Math.max(
-            0,
-            Math.min(1, ratio)
-          );
-        }
+        window.currentFFmpegProgress = Number.isFinite(ratio)
+          ? Math.max(0, Math.min(1, ratio))
+          : 0;
       }
     });
 
-    updateGeneration(5, "Downloading single-thread FFmpeg engine...");
+    updateGeneration(5, "Downloading FFmpeg engine...");
+    await waitForPaint();
 
     await ffmpeg.load();
 
     updateGeneration(10, "FFmpeg engine ready.");
+    await waitForPaint();
 
   } catch (error) {
     ffmpeg = null;
@@ -406,28 +493,58 @@ async function initializeFFmpeg() {
   }
 }
 
-// ---------------------------------
+// =============================================
 // CLEANUP DOWNLOADS
-// ---------------------------------
+// =============================================
 
 function clearDownloads() {
-  generatedURLs.forEach(url => URL.revokeObjectURL(url));
+  generatedURLs.forEach(url => {
+    URL.revokeObjectURL(url);
+  });
+
   generatedURLs = [];
 
   $("downloads").innerHTML = "";
 }
 
-// ---------------------------------
-// RENDER ONE VERTICAL MP4
-// ---------------------------------
+// =============================================
+// DOWNLOAD CARD
+// =============================================
+
+function createDownloadCard(url, index, size) {
+  const card = document.createElement("div");
+  card.className = "download-card";
+
+  const title = document.createElement("strong");
+  title.textContent = `Gaming Short ${index}`;
+
+  const info = document.createElement("p");
+  info.textContent =
+    `MP4 · 1080 × 1920 · ${formatSize(size)}`;
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `CLIPNOVA_Short_${index}.mp4`;
+  link.className = "btn primary";
+  link.textContent = "DOWNLOAD MP4";
+
+  card.append(title, info, link);
+
+  $("downloads").appendChild(card);
+}
+
+// =============================================
+// RENDER ONE CLIP
+// IMPORTANT: ONLY ONE renderClip DEFINITION
+// =============================================
 
 async function renderClip(clip, index, total) {
-  const { fetchFile } = window.FFmpeg;
-
-  const inputName = "clipnova_input";
+  const inputName = "clipnova_input.mp4";
   const outputName = `clipnova_output_${index + 1}.mp4`;
 
   const duration = clip.end - clip.start;
+
+  let inputWritten = false;
 
   try {
     updateGeneration(
@@ -435,14 +552,57 @@ async function renderClip(clip, index, total) {
       `Preparing highlight ${index + 1}/${total}...`
     );
 
-    const videoData = await fetchFile(selectedFile);
+    await waitForPaint();
+
+    // STEP 1: Read source video
+
+    updateGeneration(
+      11 + (index / total) * 85,
+      "Reading video file..."
+    );
+
+    await waitForPaint();
+
+    if (!selectedFile) {
+      throw new Error("No source video selected.");
+    }
+
+    const buffer = await selectedFile.arrayBuffer();
+
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error("Source video is empty.");
+    }
+
+    const videoData = new Uint8Array(buffer);
+
+    // STEP 2: Write video into FFmpeg
+
+    updateGeneration(
+      12 + (index / total) * 85,
+      "Copying video into FFmpeg memory..."
+    );
+
+    await waitForPaint();
 
     ffmpeg.FS("writeFile", inputName, videoData);
+    inputWritten = true;
 
-    window.currentFFmpegProgress = 0;
+    // Release reference to the temporary buffer.
+    // FFmpeg has its own copy in memory.
 
-    const startProgress = 10 + (index / total) * 85;
+    // STEP 3: Render clip
+
+    const startProgress =
+      13 + (index / total) * 85;
+
     const clipProgress = 85 / total;
+
+    updateGeneration(
+      startProgress,
+      `Rendering highlight ${index + 1}/${total}...`
+    );
+
+    await waitForPaint();
 
     ffmpeg.setProgress(({ ratio }) => {
       const safeRatio = Number.isFinite(ratio)
@@ -456,28 +616,48 @@ async function renderClip(clip, index, total) {
     });
 
     await ffmpeg.run(
+      "-y",
       "-ss", clip.start.toFixed(3),
       "-i", inputName,
       "-t", duration.toFixed(3),
+
       "-map", "0:v:0",
       "-map", "0:a?",
+
       "-vf",
       "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1",
+
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-crf", "26",
       "-pix_fmt", "yuv420p",
+
       "-c:a", "aac",
       "-b:a", "128k",
+
       "-threads", "1",
       "-movflags", "+faststart",
+
       outputName
     );
+
+    // STEP 4: Read output
+
+    updateGeneration(
+      startProgress + clipProgress * 0.95,
+      "Preparing MP4 download..."
+    );
+
+    await waitForPaint();
 
     const outputData = ffmpeg.FS(
       "readFile",
       outputName
     );
+
+    if (!outputData || outputData.length === 0) {
+      throw new Error("Rendered video is empty.");
+    }
 
     const blob = new Blob(
       [outputData],
@@ -485,10 +665,11 @@ async function renderClip(clip, index, total) {
     );
 
     if (!blob.size) {
-      throw new Error("Rendered video is empty.");
+      throw new Error("MP4 file creation failed.");
     }
 
     const downloadURL = URL.createObjectURL(blob);
+
     generatedURLs.push(downloadURL);
 
     createDownloadCard(
@@ -501,7 +682,9 @@ async function renderClip(clip, index, total) {
 
   } finally {
     try {
-      ffmpeg.FS("unlink", inputName);
+      if (inputWritten) {
+        ffmpeg.FS("unlink", inputName);
+      }
     } catch (_) {}
 
     try {
@@ -510,36 +693,13 @@ async function renderClip(clip, index, total) {
   }
 }
 
-// ---------------------------------
-// DOWNLOAD CARD
-// ---------------------------------
-
-function createDownloadCard(url, index, size) {
-  const card = document.createElement("div");
-  card.className = "highlight-card";
-
-  const title = document.createElement("strong");
-  title.textContent = `Gaming Short ${index}`;
-
-  const info = document.createElement("p");
-  info.textContent =
-    `MP4 · 1080 × 1920 · ${(size / (1024 * 1024)).toFixed(1)} MB`;
-
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `CLIPNOVA_Short_${index}.mp4`;
-  link.className = "btn primary";
-  link.textContent = "DOWNLOAD MP4";
-
-  card.append(title, info, link);
-  $("downloads").appendChild(card);
-}
-
-// ---------------------------------
+// =============================================
 // GENERATE SELECTED CLIPS
-// ---------------------------------
+// =============================================
 
-$("generateAllBtn").addEventListener("click", async () => {
+generateBtn.addEventListener("click", async () => {
+  if (generating) return;
+
   clearError();
 
   if (!selectedFile || !detectedClips.length) {
@@ -558,19 +718,26 @@ $("generateAllBtn").addEventListener("click", async () => {
     return;
   }
 
-  const selectedClips = checked.map(
-    checkbox => detectedClips[
+  const selectedClips = checked.map(checkbox => {
+    return detectedClips[
       Number(checkbox.dataset.index)
-    ]
-  );
+    ];
+  });
 
-  const button = $("generateAllBtn");
-  button.disabled = true;
+  if (selectedClips.some(clip => !clip)) {
+    showError("Invalid highlight selection. Analyze again.");
+    return;
+  }
+
+  generating = true;
+  generateBtn.disabled = true;
+  analyzeBtn.disabled = true;
 
   clearDownloads();
 
   try {
     updateGeneration(0, "Starting rendering engine...");
+    await waitForPaint();
 
     await initializeFFmpeg();
 
@@ -582,7 +749,10 @@ $("generateAllBtn").addEventListener("click", async () => {
       );
     }
 
-    updateGeneration(100, "All MP4 clips rendered successfully.");
+    updateGeneration(
+      100,
+      "All MP4 clips rendered successfully."
+    );
 
   } catch (error) {
     console.error("CLIPNOVA rendering error:", error);
@@ -590,19 +760,21 @@ $("generateAllBtn").addEventListener("click", async () => {
     showError(
       "Rendering failed: " +
       (error.message || "Unknown error") +
-      ". Try a smaller video or another browser."
+      ". Try one short MP4 clip."
     );
 
     updateGeneration(0, "Rendering failed.");
 
   } finally {
-    button.disabled = false;
+    generating = false;
+    generateBtn.disabled = false;
+    analyzeBtn.disabled = false;
   }
 });
 
-// ---------------------------------
+// =============================================
 // ANALYZE VIDEO
-// ---------------------------------
+// =============================================
 
 analyzeBtn.addEventListener("click", async () => {
   clearError();
@@ -612,11 +784,19 @@ analyzeBtn.addEventListener("click", async () => {
     return;
   }
 
+  if (generating) {
+    showError("Wait until rendering finishes.");
+    return;
+  }
+
   analyzeBtn.disabled = true;
+  generateBtn.disabled = true;
+
   detectedClips = [];
 
   try {
     updateProgress(0, "Reading video...");
+    await waitForPaint();
 
     const metadata = await getVideoMetadata(videoURL);
 
@@ -629,12 +809,16 @@ analyzeBtn.addEventListener("click", async () => {
       );
     }
 
+    updateProgress(2, "Preparing frame analysis...");
+    await waitForPaint();
+
     const scores = await analyzeFrames(
       videoURL,
       metadata.duration
     );
 
-    updateProgress(98, "Ranking highlights...");
+    updateProgress(97, "Ranking highlights...");
+    await waitForPaint();
 
     detectedClips = findHighlights(
       scores,
@@ -655,16 +839,21 @@ analyzeBtn.addEventListener("click", async () => {
       `Analysis complete · ${metadata.width} × ${metadata.height}`;
 
   } catch (error) {
-    showError(error.message || "Video analysis failed.");
+    console.error("CLIPNOVA analysis error:", error);
+
+    showError(
+      error.message || "Video analysis failed."
+    );
 
   } finally {
     analyzeBtn.disabled = false;
+    generateBtn.disabled = false;
   }
 });
 
-// ---------------------------------
+// =============================================
 // PAGE CLEANUP
-// ---------------------------------
+// =============================================
 
 window.addEventListener("beforeunload", () => {
   if (videoURL) {
@@ -675,4 +864,4 @@ window.addEventListener("beforeunload", () => {
     URL.revokeObjectURL(url);
   });
 });
-        
+                
