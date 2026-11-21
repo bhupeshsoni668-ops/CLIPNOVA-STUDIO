@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080b16">
+  <title>CLIPNOVA AI — Gaming Shorts Generator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="#"><span class="brand-mark">C</span><span>CLIPNOVA <b>AI</b><small>GAMING SHORTS STUDIO</small></span></a>
+      <span class="status"><i></i> FREE-TIER BUILD</span>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="eyebrow">YOUR GAMEPLAY. YOUR BEST MOMENTS.</div>
+        <h1>Turn long gameplay<br><span>into standout Shorts.</span></h1>
+        <p>Upload a gameplay recording. Find high-action moments. Render vertical MP4 clips.</p>
+      </section>
+
+      <section class="panel">
+        <div class="section-head"><div><span class="step">01</span><h2>Connect processing engine</h2></div><span id="apiStatus" class="pill muted">Not connected</span></div>
+        <label for="apiUrl">Backend URL</label>
+        <div class="api-row">
+          <input id="apiUrl" type="url" placeholder="https://your-space.hf.space" autocomplete="url">
+          <button id="saveApi" class="btn secondary">Save</button>
+        </div>
+        <p class="hint">Paste your deployed backend URL once. It is saved only in this browser.</p>
+      </section>
+
+      <section class="panel">
+        <div class="section-head"><div><span class="step">02</span><h2>Upload gameplay</h2></div><span class="pill">MP4 · MOV · WebM</span></div>
+        <label class="dropzone" id="dropzone" for="videoFile">
+          <input id="videoFile" type="file" accept="video/mp4,video/quicktime,video/webm,video/*">
+          <span class="upload-icon">↑</span>
+          <strong>Choose a gameplay video</strong>
+          <span>Tap to browse files on your phone</span>
+          <small>Initial backend limit: 500 MB · Up to 2 hours</small>
+        </label>
+        <div id="fileInfo" class="file-info hidden"></div>
+        <video id="sourcePreview" class="preview hidden" controls playsinline></video>
+        <div class="action-row">
+          <button id="analyzeBtn" class="btn primary" disabled>ANALYZE VIDEO <span>→</span></button>
+        </div>
+        <div id="analysisProgress" class="progress-wrap hidden">
+          <div class="progress-label"><span id="analysisMessage">Preparing analysis…</span><span id="analysisPercent">0%</span></div>
+          <div class="progress"><i id="analysisBar"></i></div>
+        </div>
+        <div id="errorBox" class="error hidden" role="alert"></div>
+      </section>
+
+      <section id="resultsSection" class="panel hidden">
+        <div class="section-head"><div><span class="step">03</span><h2>Detected highlights</h2></div><span id="resultCount" class="pill"></span></div>
+        <p class="hint">Candidates are ranked using real visual-change and audio-energy signals. They are not guaranteed kills or wins.</p>
+        <div id="highlights" class="highlights"></div>
+        <div class="generate-row">
+          <div><b>Gaming Shorts preset 01</b><small>9:16 · MP4 · 1080 × 1920 target</small></div>
+          <button id="generateAllBtn" class="btn primary">GENERATE SELECTED</button>
+        </div>
+        <div id="generationProgress" class="progress-wrap hidden">
+          <div class="progress-label"><span id="generationMessage">Rendering clips…</span><span id="generationPercent">0%</span></div>
+          <div class="progress"><i id="generationBar"></i></div>
+        </div>
+        <div id="downloads" class="downloads"></div>
+      </section>
+
+      <section class="note">
+        <b>Processing transparency</b>
+        <p>This build performs actual signal-based highlight ranking and FFmpeg rendering. Whisper speech captions are attempted when the backend model is available. It does not yet identify game events semantically or perform AI super-resolution.</p>
+      </section>
+    </main>
+    <footer>CLIPNOVA AI <span>·</span> Built for gameplay-only editing</footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
