@@ -152,88 +152,109 @@ function seekVideo(video, time) {
 // VISUAL FRAME ANALYSIS
 // ---------------------------------
 
-async function analyzeFrames(url, duration) {
-  const video = document.createElement("video");
 
-  video.src = url;
-  video.muted = true;
-  video.preload = "auto";
+async function renderClip(clip, index, total) {
+  const inputName = "clipnova_input";
+  const outputName = `clipnova_output_${index + 1}.mp4`;
 
-  await new Promise((resolve, reject) => {
-    video.onloadedmetadata = resolve;
+  const duration = clip.end - clip.start;
 
-    video.onerror = () => reject(
-      new Error("Unable to load gameplay video.")
+  try {
+    updateGeneration(
+      10 + (index / total) * 85,
+      `Loading video ${index + 1}/${total}...`
     );
-  });
 
-  const canvas = document.createElement("canvas");
-  canvas.width = 96;
-  canvas.height = 54;
+    // Read selected video using browser native API
+    updateGeneration(
+      11 + (index / total) * 85,
+      "Reading video file..."
+    );
 
-  const ctx = canvas.getContext("2d", {
-    willReadFrequently: true
-  });
+    const buffer = await selectedFile.arrayBuffer();
+    const videoData = new Uint8Array(buffer);
 
-  if (!ctx) {
-    throw new Error("Canvas is not supported in this browser.");
-  }
-
-  const sampleInterval = Math.max(1, duration / 180);
-  const scores = [];
-
-  let previousFrame = null;
-  let currentTime = 0;
-
-  while (currentTime < duration) {
-    await seekVideo(video, currentTime);
-
-    ctx.drawImage(video, 0, 0, 96, 54);
-
-    const pixels = ctx.getImageData(
-      0, 0, 96, 54
-    ).data;
-
-    let difference = 0;
-
-    if (previousFrame) {
-      for (let i = 0; i < pixels.length; i += 4) {
-        const current =
-          (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
-
-        const previous =
-          (previousFrame[i] +
-           previousFrame[i + 1] +
-           previousFrame[i + 2]) / 3;
-
-        difference += Math.abs(current - previous);
-      }
-
-      difference /= (96 * 54);
+    if (!videoData.length) {
+      throw new Error("Video file is empty.");
     }
 
-    scores.push({
-      time: currentTime,
-      score: difference
+    // Copy video into FFmpeg memory
+    updateGeneration(
+      12 + (index / total) * 85,
+      "Copying video into FFmpeg memory..."
+    );
+
+    ffmpeg.FS("writeFile", inputName, videoData);
+
+    const startProgress = 13 + (index / total) * 85;
+    const clipProgress = 85 / total;
+
+    updateGeneration(
+      startProgress,
+      `Rendering highlight ${index + 1}/${total}...`
+    );
+
+    ffmpeg.setProgress(({ ratio }) => {
+      const safeRatio = Number.isFinite(ratio)
+        ? Math.max(0, Math.min(1, ratio))
+        : 0;
+
+      updateGeneration(
+        startProgress + safeRatio * clipProgress,
+        `Rendering highlight ${index + 1}/${total}...`
+      );
     });
 
-    previousFrame = new Uint8ClampedArray(pixels);
-    currentTime += sampleInterval;
-
-    const percent = Math.min(
-      95,
-      Math.round((currentTime / duration) * 100)
+    await ffmpeg.run(
+      "-ss", clip.start.toFixed(3),
+      "-i", inputName,
+      "-t", duration.toFixed(3),
+      "-map", "0:v:0",
+      "-map", "0:a?",
+      "-vf",
+      "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1",
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "26",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-threads", "1",
+      "-movflags", "+faststart",
+      outputName
     );
 
-    updateProgress(
-      percent,
-      `Analyzing gameplay: ${formatTime(Math.min(currentTime, duration))}`
+    const outputData = ffmpeg.FS("readFile", outputName);
+
+    const blob = new Blob(
+      [outputData],
+      { type: "video/mp4" }
     );
 
-    await new Promise(resolve => setTimeout(resolve, 0));
+    if (!blob.size) {
+      throw new Error("Rendered video is empty.");
+    }
+
+    const downloadURL = URL.createObjectURL(blob);
+    generatedURLs.push(downloadURL);
+
+    createDownloadCard(
+      downloadURL,
+      index + 1,
+      blob.size
+    );
+
+    return true;
+
+  } finally {
+    try {
+      ffmpeg.FS("unlink", inputName);
+    } catch (_) {}
+
+    try {
+      ffmpeg.FS("unlink", outputName);
+    } catch (_) {}
   }
-
-  return scores;
 }
 
 // ---------------------------------
